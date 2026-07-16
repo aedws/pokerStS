@@ -28,6 +28,16 @@ const STATUS_ON_HIT: Record<Element, Partial<EnemyInstance["statuses"]>> = {
   poison: { poison: 3 },
 };
 
+export interface HitFx {
+  id: number;
+  enemyId: string;
+  amount: number;
+  crit: boolean;
+  element: Element;
+}
+
+let fxCounter = 0;
+
 interface GameState {
   phase: Phase;
 
@@ -55,6 +65,14 @@ interface GameState {
   turn: number;
 
   log: string[];
+
+  // 이펙트 트리거 (UI 애니메이션용)
+  fx: HitFx[]; // 이번 사격의 플로팅 데미지
+  fxSeq: number; // 사격 이펙트 시퀀스
+  rollSeq: number; // 주사위 굴림 애니메이션 트리거
+  flash: "crit" | "flush" | null; // 화면 플래시
+  playerHitSeq: number; // 플레이어 피격 트리거
+  playerHitAmount: number;
 
   // actions
   chooseWeapon: (w: Weapon) => void;
@@ -119,6 +137,12 @@ export const useGame = create<GameState>((set, get) => ({
   xp: 0,
   turn: 0,
   log: [],
+  fx: [],
+  fxSeq: 0,
+  rollSeq: 0,
+  flash: null,
+  playerHitSeq: 0,
+  playerHitAmount: 0,
 
   chooseWeapon: (w) => {
     const deck = shuffle(buildStandardDeck());
@@ -174,6 +198,7 @@ export const useGame = create<GameState>((set, get) => ({
       deck: drawn.deck,
       discard: drawn.discard,
       selected: [],
+      rollSeq: s.rollSeq + 1,
       log: [
         ...s.log,
         `🎲 재장전 → ${value} (${loadCount}발 장전)` +
@@ -204,6 +229,8 @@ export const useGame = create<GameState>((set, get) => ({
 
     const log = [...s.log];
     let enemies = s.enemies.map((e) => ({ ...e, statuses: { ...e.statuses } }));
+    const fx: HitFx[] = [];
+    let sawFlush = false;
 
     for (const t of targets) {
       const idx = enemies.findIndex((e) => e.id === t.id);
@@ -214,6 +241,7 @@ export const useGame = create<GameState>((set, get) => ({
         crit: s.crit,
         singleSuitMult: s.weapon!.singleSuitMult,
       });
+      if (atk.hand.type.key.includes("flush")) sawFlush = true;
 
       // 감전: 기존 shock 스택으로 이번 피해 증폭 후 소비
       let dmg = atk.total;
@@ -222,6 +250,14 @@ export const useGame = create<GameState>((set, get) => ({
         enemy.statuses.shock = 0;
       }
       enemy.hp = Math.max(0, enemy.hp - dmg);
+
+      fx.push({
+        id: ++fxCounter,
+        enemyId: enemy.id,
+        amount: dmg,
+        crit: s.crit,
+        element: atk.shares[0]?.element ?? "fire",
+      });
 
       // 이번 사격 속성으로 상태이상 부여 (실제 피해가 있는 속성만)
       for (const share of atk.shares) {
@@ -245,6 +281,9 @@ export const useGame = create<GameState>((set, get) => ({
       selected: [],
       log,
       targetId: retarget(enemies, s.targetId),
+      fx,
+      fxSeq: s.fxSeq + 1,
+      flash: s.crit ? "crit" : sawFlush ? "flush" : null,
     });
     afterShoot(set, get);
   },
@@ -302,6 +341,8 @@ function beginShot(set: SetFn, get: GetFn) {
     deck: drawn.deck,
     discard: drawn.discard,
     selected: [],
+    rollSeq: s.rollSeq + 1,
+    flash: null,
     log: [...s.log, `🎲 장전 → ${value} (${loadCount}발 · 손패 ${drawn.hand.length}장)`],
   });
 }
@@ -354,6 +395,7 @@ function enemyTurn(set: SetFn, get: GetFn) {
   const lastRoll = s.currentRoll ?? 6;
   let log = [...s.log];
   let playerHp = s.playerHp;
+  let playerDamage = 0;
 
   const enemies = s.enemies.map((e) => ({ ...e, statuses: { ...e.statuses } }));
 
@@ -387,6 +429,7 @@ function enemyTurn(set: SetFn, get: GetFn) {
     }
 
     playerHp = Math.max(0, playerHp - e.attack);
+    playerDamage += e.attack;
     log.push(`${e.emoji} ${e.name}의 반격 · ${e.attack} 피해 (내 HP ${playerHp})`);
   }
 
@@ -407,12 +450,17 @@ function enemyTurn(set: SetFn, get: GetFn) {
     log.push(`⭐ 레벨 업! Lv.${level}`);
   }
 
+  const hitFx =
+    playerDamage > 0
+      ? { playerHitSeq: s.playerHitSeq + 1, playerHitAmount: playerDamage }
+      : {};
+
   if (playerHp <= 0) {
-    set({ enemies, playerHp: 0, xp, level, log, phase: "lost" });
+    set({ enemies, playerHp: 0, xp, level, log, phase: "lost", ...hitFx });
     return;
   }
   if (liveEnemies(enemies).length === 0) {
-    set({ enemies, playerHp, xp, level, log, phase: "won" });
+    set({ enemies, playerHp, xp, level, log, phase: "won", ...hitFx });
     return;
   }
 
@@ -423,6 +471,7 @@ function enemyTurn(set: SetFn, get: GetFn) {
     level,
     log,
     targetId: retarget(enemies, s.targetId),
+    ...hitFx,
   });
   startPlayerTurn(set, get);
 }

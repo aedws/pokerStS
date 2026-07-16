@@ -64,19 +64,52 @@ export const ENEMY_DEFS: EnemyDef[] = [
   },
 ];
 
-export function makeEnemy(def: EnemyDef, idx = 0): EnemyInstance {
+// 런의 최종 보스
+export const BOSS_DEF: EnemyDef = {
+  key: "dredgenKing",
+  name: "드렛전 킹",
+  emoji: "👑",
+  maxHp: 240,
+  speed: 5,
+  attack: 22,
+  reactions: { fire: 0.7, ice: 0.7, lightning: 1.3 }, // 대부분 저항, 번개만 약점
+  blurb: "현상금 사냥의 왕. 대부분의 속성에 강하다.",
+};
+
+export function makeEnemy(def: EnemyDef, idx = 0, scale = 1): EnemyInstance {
+  const maxHp = Math.round(def.maxHp * scale);
   return {
     ...def,
-    id: `${def.key}-${idx}`,
-    hp: def.maxHp,
+    maxHp,
+    attack: Math.round(def.attack * scale),
+    id: `${def.key}-${idx}-${Math.floor(Math.random() * 1e6)}`,
+    hp: maxHp,
     statuses: emptyStatuses(),
   };
 }
 
-// MVP 인카운터: 하운드 + 밴딧 조합 (약점이 서로 달라 속성 선택을 유도)
-export function defaultEncounter(): EnemyInstance[] {
-  return [
-    makeEnemy(ENEMY_DEFS[0], 0),
-    makeEnemy(ENEMY_DEFS[1], 1),
-  ];
+// 노드 타입 + 깊이(row)로 인카운터 생성 — 위로 갈수록 강해진다
+export function buildEncounter(
+  type: "combat" | "elite" | "rest" | "boss",
+  row: number,
+  rng: () => number = Math.random
+): EnemyInstance[] {
+  const scale = 1 + row * 0.16;
+
+  if (type === "boss") return [makeEnemy(BOSS_DEF, 0, 1)];
+
+  if (type === "elite") {
+    // 고철 거인(엘리트급)을 강화해서 1기
+    return [makeEnemy(ENEMY_DEFS[2], 0, scale * 1.05)];
+  }
+
+  // 일반 전투: 하운드/밴딧 1~2기
+  const pool = [ENEMY_DEFS[0], ENEMY_DEFS[1]];
+  const count = row === 0 ? 2 : rng() < 0.5 ? 1 : 2;
+  const out: EnemyInstance[] = [];
+  for (let i = 0; i < count; i++) {
+    const def = pool[Math.floor(rng() * pool.length)];
+    out.push(makeEnemy(def, i, scale));
+  }
+  return out;
 }

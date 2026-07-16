@@ -52,17 +52,34 @@ export function cardElement(card: Card): Element {
   return SUIT_ELEMENT[card.suit];
 }
 
-const SUITS: Suit[] = ["hearts", "diamonds", "spades", "clubs"];
+export const SUITS: Suit[] = ["hearts", "diamonds", "spades", "clubs"];
 
-// 표준 52장 덱 생성
+// 카드 인스턴스마다 고유 id (같은 숫자/무늬 카드를 덱에 여러 장 넣을 수 있게)
+let cardUid = 0;
+export function makeCard(suit: Suit, rank: Rank): Card {
+  return { id: `c${++cardUid}`, rank, suit };
+}
+
+// 표준 52장 덱 생성 (덱빌딩의 시작점 — 넣고 빼며 특화한다)
 export function buildStandardDeck(): Card[] {
   const deck: Card[] = [];
   for (const suit of SUITS) {
     for (let rank = 2; rank <= 14; rank++) {
-      deck.push({ id: `${suit}-${rank}`, rank, suit });
+      deck.push(makeCard(suit, rank));
     }
   }
   return deck;
+}
+
+// 전투 보상용 카드 후보 n장 (덱에 추가할 후보)
+export function randomRewardCards(n: number, rng: () => number = Math.random): Card[] {
+  const out: Card[] = [];
+  for (let i = 0; i < n; i++) {
+    const suit = SUITS[Math.floor(rng() * SUITS.length)];
+    const rank = 2 + Math.floor(rng() * 13); // 2..14
+    out.push(makeCard(suit, rank));
+  }
+  return out;
 }
 
 // Fisher-Yates 셔플 (주입된 rng 사용 — 테스트 가능)

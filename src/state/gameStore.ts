@@ -1,26 +1,38 @@
 import { create } from "zustand";
-import type { Card } from "../engine/cards";
-import { buildStandardDeck, shuffle, cardElement } from "../engine/cards";
-import type { Element } from "../engine/cards";
+import type { Card, Element } from "../engine/cards";
+import {
+  buildStandardDeck,
+  shuffle,
+  randomRewardCards,
+} from "../engine/cards";
 import { BASE_DIE, rollDie, damageBonusFor } from "../engine/dice";
 import type { DieConfig } from "../engine/dice";
 import { computeAttack } from "../engine/damage";
 import type { AttackBreakdown } from "../engine/damage";
 import type { EnemyInstance } from "../engine/enemies";
-import { defaultEncounter } from "../engine/enemies";
+import { buildEncounter } from "../engine/enemies";
 import type { Weapon } from "../engine/weapons";
 import { WEAPONS } from "../engine/weapons";
 import { xpForLevel, xpReward } from "../engine/progression";
+import { generateMap } from "../engine/map";
+import type { GameMap, NodeType } from "../engine/map";
 
-export type Phase = "intro" | "player" | "enemy" | "won" | "lost";
+// 화면(런 전체 흐름)
+export type Screen =
+  | "intro"
+  | "map"
+  | "combat"
+  | "reward"
+  | "rest"
+  | "won"
+  | "lost";
+export type CombatTurn = "player" | "enemy";
 
-// 참고: 설계 문서의 "턴당 행동 수(기본1~최대6)"를 MVP에서는
-//  - shotsPerTurn = 턴당 사격 횟수(성장 대상)
-//  - reloadsPerShot = 사격 전 재장전(재굴림) 허용 횟수(크리 노림/족보 개선)
-// 로 분리 해석한다. (문서 8장 성장으로 확장 예정)
+const START_HP = 80;
+const REST_HEAL = 0.3;
+const LEVELUP_HP = 6;
 const RELOADS_PER_SHOT = 2;
 
-// 속성 → 상태이상 부여량
 const STATUS_ON_HIT: Record<Element, Partial<EnemyInstance["statuses"]>> = {
   fire: { burn: 3 },
   ice: { chill: 1 },
@@ -35,63 +47,75 @@ export interface HitFx {
   crit: boolean;
   element: Element;
 }
-
 let fxCounter = 0;
 
 interface GameState {
-  phase: Phase;
+  screen: Screen;
+  combatTurn: CombatTurn;
 
+  // ---- 런(run) 지속 상태 ----
   weapon: Weapon | null;
-  deck: Card[]; // 드로우 더미
+  masterDeck: Card[]; // 넣고 빼며 특화하는 마스터 덱
+  hp: number;
+  maxHp: number;
+  level: number;
+  xp: number;
+
+  map: GameMap | null;
+  available: string[]; // 지금 진입 가능한 노드 id
+  currentRow: number;
+  currentNodeId: string | null;
+  currentNodeType: NodeType | null;
+
+  rewardCards: Card[]; // 전투 보상 후보
+
+  // ---- 전투(combat) 일시 상태 ----
+  drawPile: Card[];
   discard: Card[];
   hand: Card[];
-  selected: string[]; // 선택된 카드 id
-
+  selected: string[];
   die: DieConfig;
-  currentRoll: number | null; // 이번 사격에 로드된 눈
-  crit: boolean; // 현재 손패가 크리티컬인지 (재장전 연속 같은 눈)
+  currentRoll: number | null;
+  crit: boolean;
   reloadsLeft: number;
   shotsLeft: number;
   shotsPerTurn: number;
-
+  turn: number;
   enemies: EnemyInstance[];
   targetId: string | null;
 
-  playerHp: number;
-  playerMaxHp: number;
-
-  level: number;
-  xp: number;
-  turn: number;
+  // ---- 이펙트 트리거 ----
+  fx: HitFx[];
+  fxSeq: number;
+  rollSeq: number;
+  flash: "crit" | "flush" | null;
+  playerHitSeq: number;
+  playerHitAmount: number;
 
   log: string[];
 
-  // 이펙트 트리거 (UI 애니메이션용)
-  fx: HitFx[]; // 이번 사격의 플로팅 데미지
-  fxSeq: number; // 사격 이펙트 시퀀스
-  rollSeq: number; // 주사위 굴림 애니메이션 트리거
-  flash: "crit" | "flush" | null; // 화면 플래시
-  playerHitSeq: number; // 플레이어 피격 트리거
-  playerHitAmount: number;
-
-  // actions
+  // ---- 액션 ----
   chooseWeapon: (w: Weapon) => void;
+  enterNode: (id: string) => void;
   toggleSelect: (id: string) => void;
   setTarget: (id: string) => void;
   reload: () => void;
   shoot: () => void;
+  pickReward: (cardId: string) => void;
+  skipReward: () => void;
+  restHeal: () => void;
+  removeCard: (cardId: string) => void;
   restart: () => void;
 
-  // derived
   preview: () => AttackBreakdown | null;
 }
 
 function drawCards(
-  deck: Card[],
+  pile: Card[],
   discard: Card[],
   n: number
-): { hand: Card[]; deck: Card[]; discard: Card[] } {
-  let d = deck.slice();
+): { hand: Card[]; pile: Card[]; discard: Card[] } {
+  let d = pile.slice();
   let dis = discard.slice();
   const hand: Card[] = [];
   for (let i = 0; i < n; i++) {
@@ -102,14 +126,13 @@ function drawCards(
     }
     hand.push(d.shift()!);
   }
-  return { hand, deck: d, discard: dis };
+  return { hand, pile: d, discard: dis };
 }
 
 function liveEnemies(enemies: EnemyInstance[]): EnemyInstance[] {
   return enemies.filter((e) => e.hp > 0);
 }
 
-// 조준 대상이 죽었으면 살아있는 적으로 옮긴다
 function retarget(enemies: EnemyInstance[], current: string | null): string | null {
   const cur = enemies.find((e) => e.id === current);
   if (cur && cur.hp > 0) return current;
@@ -117,9 +140,21 @@ function retarget(enemies: EnemyInstance[], current: string | null): string | nu
 }
 
 export const useGame = create<GameState>((set, get) => ({
-  phase: "intro",
+  screen: "intro",
+  combatTurn: "player",
   weapon: null,
-  deck: [],
+  masterDeck: [],
+  hp: START_HP,
+  maxHp: START_HP,
+  level: 1,
+  xp: 0,
+  map: null,
+  available: [],
+  currentRow: 0,
+  currentNodeId: null,
+  currentNodeType: null,
+  rewardCards: [],
+  drawPile: [],
   discard: [],
   hand: [],
   selected: [],
@@ -129,41 +164,49 @@ export const useGame = create<GameState>((set, get) => ({
   reloadsLeft: 0,
   shotsLeft: 0,
   shotsPerTurn: 1,
+  turn: 0,
   enemies: [],
   targetId: null,
-  playerHp: 80,
-  playerMaxHp: 80,
-  level: 1,
-  xp: 0,
-  turn: 0,
-  log: [],
   fx: [],
   fxSeq: 0,
   rollSeq: 0,
   flash: null,
   playerHitSeq: 0,
   playerHitAmount: 0,
+  log: [],
 
   chooseWeapon: (w) => {
-    const deck = shuffle(buildStandardDeck());
-    const enemies = defaultEncounter();
+    const map = generateMap();
     set({
       weapon: w,
-      deck,
-      discard: [],
-      enemies,
-      targetId: enemies[0].id,
-      playerHp: 80,
-      playerMaxHp: 80,
+      masterDeck: buildStandardDeck(),
+      hp: START_HP,
+      maxHp: START_HP,
       level: 1,
       xp: 0,
-      turn: 0,
-      shotsPerTurn: 1,
-      log: [
-        `${w.emoji} ${w.name} 장비. 무법자 ${enemies.length}명과 대치한다.`,
-      ],
+      map,
+      available: map.rows[0],
+      currentRow: 0,
+      currentNodeId: null,
+      currentNodeType: null,
+      screen: "map",
+      log: [`${w.emoji} ${w.name} 장비. 황무지의 탑을 오른다.`],
     });
-    startPlayerTurn(set, get);
+  },
+
+  enterNode: (id) => {
+    const s = get();
+    if (!s.map || !s.available.includes(id)) return;
+    const node = s.map.nodes[id];
+    set({ currentNodeId: id, currentNodeType: node.type });
+    if (node.type === "rest") {
+      set({
+        screen: "rest",
+        log: [...s.log, `🔥 휴식 지점에 도착했다.`],
+      });
+    } else {
+      startCombat(set, get, node.type, node.row);
+    }
   },
 
   toggleSelect: (id) => {
@@ -172,7 +215,6 @@ export const useGame = create<GameState>((set, get) => ({
     if (selected.includes(id)) {
       set({ selected: selected.filter((s) => s !== id) });
     } else {
-      // 족보는 최대 5장까지 의미가 있음
       if (selected.length >= Math.min(5, cap)) return;
       set({ selected: [...selected, id] });
     }
@@ -182,20 +224,20 @@ export const useGame = create<GameState>((set, get) => ({
 
   reload: () => {
     const s = get();
-    if (s.phase !== "player" || s.reloadsLeft <= 0) return;
+    if (s.screen !== "combat" || s.combatTurn !== "player" || s.reloadsLeft <= 0)
+      return;
     const prev = s.currentRoll;
     const value = rollDie(s.die);
     const crit = prev !== null && prev === value;
     const cap = s.weapon!.magazineCap;
     const loadCount = Math.min(value, cap);
-    const discardAll = [...s.discard, ...s.hand];
-    const drawn = drawCards(s.deck, discardAll, loadCount);
+    const drawn = drawCards(s.drawPile, [...s.discard, ...s.hand], loadCount);
     set({
       currentRoll: value,
       crit,
       reloadsLeft: s.reloadsLeft - 1,
       hand: drawn.hand,
-      deck: drawn.deck,
+      drawPile: drawn.pile,
       discard: drawn.discard,
       selected: [],
       rollSeq: s.rollSeq + 1,
@@ -209,7 +251,7 @@ export const useGame = create<GameState>((set, get) => ({
 
   shoot: () => {
     const s = get();
-    if (s.phase !== "player") return;
+    if (s.screen !== "combat" || s.combatTurn !== "player") return;
     const selectedCards = s.hand.filter((c) => s.selected.includes(c.id));
     if (selectedCards.length === 0) return;
 
@@ -218,17 +260,15 @@ export const useGame = create<GameState>((set, get) => ({
     if (s.weapon!.fireMode === "all") {
       targets = liveEnemies(s.enemies);
     } else {
-      // 조준 대상이 이미 쓰러졌으면 살아있는 적으로 자동 재조준
       const aimed =
         s.enemies.find((e) => e.id === s.targetId && e.hp > 0) ??
         liveEnemies(s.enemies)[0];
       targets = aimed ? [aimed] : [];
     }
-
     if (targets.length === 0) return;
 
     const log = [...s.log];
-    let enemies = s.enemies.map((e) => ({ ...e, statuses: { ...e.statuses } }));
+    const enemies = s.enemies.map((e) => ({ ...e, statuses: { ...e.statuses } }));
     const fx: HitFx[] = [];
     let sawFlush = false;
 
@@ -243,7 +283,6 @@ export const useGame = create<GameState>((set, get) => ({
       });
       if (atk.hand.type.key.includes("flush")) sawFlush = true;
 
-      // 감전: 기존 shock 스택으로 이번 피해 증폭 후 소비
       let dmg = atk.total;
       if (enemy.statuses.shock > 0) {
         dmg = Math.round(dmg * (1 + 0.3 * enemy.statuses.shock));
@@ -259,7 +298,6 @@ export const useGame = create<GameState>((set, get) => ({
         element: atk.shares[0]?.element ?? "fire",
       });
 
-      // 이번 사격 속성으로 상태이상 부여 (실제 피해가 있는 속성만)
       for (const share of atk.shares) {
         const add = STATUS_ON_HIT[share.element];
         for (const k of Object.keys(add) as (keyof typeof add)[]) {
@@ -267,9 +305,8 @@ export const useGame = create<GameState>((set, get) => ({
         }
       }
 
-      const handName = atk.hand.type.name;
       log.push(
-        `${s.weapon!.emoji} ${handName} → ${enemy.name}에게 ${dmg} 피해` +
+        `${s.weapon!.emoji} ${atk.hand.type.name} → ${enemy.name}에게 ${dmg} 피해` +
           (s.crit ? " (크리티컬!)" : "") +
           (enemy.hp <= 0 ? " · 처치!" : ` (남은 HP ${enemy.hp})`)
       );
@@ -277,6 +314,7 @@ export const useGame = create<GameState>((set, get) => ({
 
     set({
       enemies,
+      discard: [...s.discard, ...s.hand],
       hand: [],
       selected: [],
       log,
@@ -288,27 +326,65 @@ export const useGame = create<GameState>((set, get) => ({
     afterShoot(set, get);
   },
 
+  pickReward: (cardId) => {
+    const s = get();
+    const card = s.rewardCards.find((c) => c.id === cardId);
+    if (!card) return;
+    set({
+      masterDeck: [...s.masterDeck, card],
+      rewardCards: [],
+      log: [...s.log, `🃏 카드 획득: 덱에 추가 (덱 ${s.masterDeck.length + 1}장)`],
+    });
+    advanceMap(set, get);
+  },
+
+  skipReward: () => {
+    const s = get();
+    set({ rewardCards: [], log: [...s.log, `보상을 건너뛰었다.`] });
+    advanceMap(set, get);
+  },
+
+  restHeal: () => {
+    const s = get();
+    const heal = Math.round(s.maxHp * REST_HEAL);
+    const hp = Math.min(s.maxHp, s.hp + heal);
+    set({ hp, log: [...s.log, `🔥 휴식 · HP +${hp - s.hp === 0 ? heal : hp - s.hp} 회복`] });
+    advanceMap(set, get);
+  },
+
+  removeCard: (cardId) => {
+    const s = get();
+    if (s.masterDeck.length <= 5) return; // 최소 덱 크기 보호
+    set({
+      masterDeck: s.masterDeck.filter((c) => c.id !== cardId),
+      log: [...s.log, `🗑️ 카드 제거 · 덱 특화 (덱 ${s.masterDeck.length - 1}장)`],
+    });
+    advanceMap(set, get);
+  },
+
   restart: () => {
     set({
-      phase: "intro",
+      screen: "intro",
       weapon: null,
+      masterDeck: [],
       enemies: [],
       hand: [],
       selected: [],
+      map: null,
       log: [],
     });
   },
 
   preview: () => {
     const s = get();
-    if (s.phase !== "player" || !s.weapon) return null;
+    if (s.screen !== "combat" || s.combatTurn !== "player" || !s.weapon)
+      return null;
     const selectedCards = s.hand.filter((c) => s.selected.includes(c.id));
     if (selectedCards.length === 0) return null;
     const target =
       s.enemies.find((e) => e.id === s.targetId && e.hp > 0) ??
       liveEnemies(s.enemies)[0];
-    const reactions = target?.reactions ?? {};
-    return computeAttack(selectedCards, reactions, {
+    return computeAttack(selectedCards, target?.reactions ?? {}, {
       damageBonus: damageBonusFor(s.currentRoll ?? 1),
       crit: s.crit,
       singleSuitMult: s.weapon.singleSuitMult,
@@ -316,14 +392,40 @@ export const useGame = create<GameState>((set, get) => ({
   },
 }));
 
-// ---- 턴 진행 (스토어 외부 헬퍼) ----
-
+// ---- 헬퍼 (스토어 외부) ----
 type SetFn = (partial: Partial<GameState>) => void;
 type GetFn = () => GameState;
 
+function startCombat(set: SetFn, get: GetFn, type: NodeType, row: number) {
+  const s = get();
+  const enemies = buildEncounter(type, row);
+  const shotsPerTurn = Math.min(6, 1 + Math.floor((s.level - 1) / 3));
+  set({
+    screen: "combat",
+    combatTurn: "player",
+    drawPile: shuffle(s.masterDeck),
+    discard: [],
+    hand: [],
+    selected: [],
+    enemies,
+    targetId: enemies[0]?.id ?? null,
+    shotsPerTurn,
+    turn: 0,
+    currentRoll: null,
+    crit: false,
+    fx: [],
+    flash: null,
+    log: [
+      ...s.log,
+      `⚔️ ${enemies.map((e) => e.name).join(", ")} 등장! (덱 ${s.masterDeck.length}장)`,
+    ],
+  });
+  startPlayerTurn(set, get);
+}
+
 function startPlayerTurn(set: SetFn, get: GetFn) {
   const s = get();
-  set({ phase: "player", turn: s.turn + 1, shotsLeft: s.shotsPerTurn });
+  set({ combatTurn: "player", turn: s.turn + 1, shotsLeft: s.shotsPerTurn });
   beginShot(set, get);
 }
 
@@ -332,13 +434,13 @@ function beginShot(set: SetFn, get: GetFn) {
   const value = rollDie(s.die);
   const cap = s.weapon!.magazineCap;
   const loadCount = Math.min(value, cap);
-  const drawn = drawCards(s.deck, s.discard, loadCount);
+  const drawn = drawCards(s.drawPile, s.discard, loadCount);
   set({
     currentRoll: value,
     crit: false,
     reloadsLeft: RELOADS_PER_SHOT,
     hand: drawn.hand,
-    deck: drawn.deck,
+    drawPile: drawn.pile,
     discard: drawn.discard,
     selected: [],
     rollSeq: s.rollSeq + 1,
@@ -347,54 +449,105 @@ function beginShot(set: SetFn, get: GetFn) {
   });
 }
 
-function afterShoot(set: SetFn, get: GetFn) {
-  const s = get();
-  const discard = [...s.discard, ...s.hand];
-
-  // 처치 XP 정산
-  const killed = s.enemies.filter(
-    (e) => e.hp <= 0 && !(e as EnemyInstance & { counted?: boolean }).counted
-  );
-  let xp = s.xp;
-  let level = s.level;
-  const log = [...s.log];
-  const enemies = s.enemies.map((e) => {
+function grantXpAndLevel(
+  enemies: EnemyInstance[],
+  xp0: number,
+  level0: number,
+  maxHp0: number,
+  hp0: number,
+  log: string[]
+) {
+  let xp = xp0;
+  let level = level0;
+  let maxHp = maxHp0;
+  let hp = hp0;
+  for (const e of enemies) {
     if (e.hp <= 0 && !(e as any).counted) {
       const reward = xpReward(e);
       xp += reward;
       (e as any).counted = true;
       log.push(`💀 ${e.name} 처치 · +${reward} XP`);
     }
-    return e;
-  });
-  void killed;
+  }
   while (xp >= xpForLevel(level)) {
     xp -= xpForLevel(level);
     level += 1;
-    log.push(`⭐ 레벨 업! Lv.${level}`);
+    maxHp += LEVELUP_HP;
+    hp += LEVELUP_HP;
+    log.push(`⭐ 레벨 업! Lv.${level} · 최대 HP +${LEVELUP_HP}`);
   }
+  return { xp, level, maxHp, hp };
+}
+
+function winCombat(
+  set: SetFn,
+  get: GetFn,
+  base: Partial<GameState>
+) {
+  const s = get();
+  if (s.currentNodeType === "boss") {
+    set({ ...base, screen: "won" });
+    return;
+  }
+  set({
+    ...base,
+    screen: "reward",
+    rewardCards: randomRewardCards(3),
+    log: [...(base.log ?? s.log), `🏆 승리! 보상 카드를 고르세요.`],
+  });
+}
+
+function afterShoot(set: SetFn, get: GetFn) {
+  const s = get();
+  const log = [...s.log];
+  const enemies = s.enemies;
+  const g = grantXpAndLevel(enemies, s.xp, s.level, s.maxHp, s.hp, log);
 
   if (liveEnemies(enemies).length === 0) {
-    set({ enemies, discard, hand: [], xp, level, log, phase: "won" });
+    winCombat(set, get, {
+      enemies,
+      hand: [],
+      xp: g.xp,
+      level: g.level,
+      maxHp: g.maxHp,
+      hp: g.hp,
+      log,
+    });
     return;
   }
 
   const shotsLeft = s.shotsLeft - 1;
   if (shotsLeft > 0) {
-    set({ enemies, discard, hand: [], xp, level, log, shotsLeft });
+    set({
+      enemies,
+      xp: g.xp,
+      level: g.level,
+      maxHp: g.maxHp,
+      hp: g.hp,
+      log,
+      shotsLeft,
+    });
     beginShot(set, get);
   } else {
-    set({ enemies, discard, hand: [], xp, level, log, shotsLeft: 0 });
+    set({
+      enemies,
+      xp: g.xp,
+      level: g.level,
+      maxHp: g.maxHp,
+      hp: g.hp,
+      log,
+      shotsLeft: 0,
+    });
     enemyTurn(set, get);
   }
 }
 
 function enemyTurn(set: SetFn, get: GetFn) {
   const s = get();
-  set({ phase: "enemy" });
+  set({ combatTurn: "enemy" });
   const lastRoll = s.currentRoll ?? 6;
-  let log = [...s.log];
-  let playerHp = s.playerHp;
+  const log = [...s.log];
+  let hp = s.hp;
   let playerDamage = 0;
 
   const enemies = s.enemies.map((e) => ({ ...e, statuses: { ...e.statuses } }));
@@ -402,7 +555,6 @@ function enemyTurn(set: SetFn, get: GetFn) {
   for (const e of enemies) {
     if (e.hp <= 0) continue;
 
-    // 도트 상태이상 처리 (화상/독)
     const dot = e.statuses.burn + e.statuses.poison;
     if (dot > 0) {
       e.hp = Math.max(0, e.hp - dot);
@@ -415,60 +567,51 @@ function enemyTurn(set: SetFn, get: GetFn) {
       if (e.hp <= 0) continue;
     }
 
-    // 빙결: 이번 공격 스킵
     if (e.statuses.chill > 0) {
       e.statuses.chill -= 1;
       log.push(`❄️ ${e.name} 빙결로 행동 불가.`);
       continue;
     }
 
-    // 선공(이니셔티브): 플레이어가 이 적보다 빠르면(낮은 눈) 공격 무효
     if (lastRoll <= e.speed) {
       log.push(`⚡ 선공! ${e.name}의 공격을 앞질러 무력화.`);
       continue;
     }
 
-    playerHp = Math.max(0, playerHp - e.attack);
+    hp = Math.max(0, hp - e.attack);
     playerDamage += e.attack;
-    log.push(`${e.emoji} ${e.name}의 반격 · ${e.attack} 피해 (내 HP ${playerHp})`);
+    log.push(`${e.emoji} ${e.name}의 반격 · ${e.attack} 피해 (내 HP ${hp})`);
   }
 
-  // 도트로 죽은 적 XP 정산
-  let xp = s.xp;
-  let level = s.level;
-  for (const e of enemies) {
-    if (e.hp <= 0 && !(e as any).counted) {
-      const reward = xpReward(e);
-      xp += reward;
-      (e as any).counted = true;
-      log.push(`💀 ${e.name} 처치 · +${reward} XP`);
-    }
-  }
-  while (xp >= xpForLevel(level)) {
-    xp -= xpForLevel(level);
-    level += 1;
-    log.push(`⭐ 레벨 업! Lv.${level}`);
-  }
-
+  const g = grantXpAndLevel(enemies, s.xp, s.level, s.maxHp, s.hp, log);
   const hitFx =
     playerDamage > 0
       ? { playerHitSeq: s.playerHitSeq + 1, playerHitAmount: playerDamage }
       : {};
 
-  if (playerHp <= 0) {
-    set({ enemies, playerHp: 0, xp, level, log, phase: "lost", ...hitFx });
+  if (hp <= 0) {
+    set({ enemies, hp: 0, xp: g.xp, level: g.level, log, screen: "lost", ...hitFx });
     return;
   }
   if (liveEnemies(enemies).length === 0) {
-    set({ enemies, playerHp, xp, level, log, phase: "won", ...hitFx });
+    winCombat(set, get, {
+      enemies,
+      hp: Math.min(g.maxHp, hp + (g.hp - s.hp)),
+      maxHp: g.maxHp,
+      xp: g.xp,
+      level: g.level,
+      log,
+      ...hitFx,
+    });
     return;
   }
 
   set({
     enemies,
-    playerHp,
-    xp,
-    level,
+    hp: Math.min(g.maxHp, hp + (g.hp - s.hp)),
+    maxHp: g.maxHp,
+    xp: g.xp,
+    level: g.level,
     log,
     targetId: retarget(enemies, s.targetId),
     ...hitFx,
@@ -476,8 +619,24 @@ function enemyTurn(set: SetFn, get: GetFn) {
   startPlayerTurn(set, get);
 }
 
-// 무기 목록 재노출 (UI 편의)
-export { WEAPONS };
-export function cardElementOf(card: Card): Element {
-  return cardElement(card);
+function advanceMap(set: SetFn, get: GetFn) {
+  const s = get();
+  if (!s.map || !s.currentNodeId) {
+    set({ screen: "map" });
+    return;
+  }
+  const node = s.map.nodes[s.currentNodeId];
+  if (node.type === "boss" || node.next.length === 0) {
+    set({ screen: "won" });
+    return;
+  }
+  set({
+    screen: "map",
+    available: node.next,
+    currentRow: node.row + 1,
+    currentNodeId: null,
+    currentNodeType: null,
+  });
 }
+
+export { WEAPONS };

@@ -6,19 +6,72 @@ import { rankLabel, SUIT_SYMBOL, SUIT_ELEMENT, ELEMENT_INFO } from "../engine/ca
 import type { Element } from "../engine/cards";
 import type { EnemyInstance } from "../engine/enemies";
 import { xpForLevel } from "../engine/progression";
+import { NODE_INFO } from "../engine/map";
+import type { MapNode } from "../engine/map";
 
 export function App() {
-  const phase = useGame((s) => s.phase);
+  const screen = useGame((s) => s.screen);
   return (
     <div className="app">
-      {phase === "intro" && <Intro />}
-      {(phase === "player" || phase === "enemy") && <Combat />}
-      {(phase === "won" || phase === "lost") && <Result />}
+      {screen === "intro" && <Intro />}
+      {screen === "map" && <MapScreen />}
+      {screen === "combat" && <Combat />}
+      {screen === "reward" && <Reward />}
+      {screen === "rest" && <Rest />}
+      {(screen === "won" || screen === "lost") && <Result />}
     </div>
   );
 }
 
-/* ---------------- Intro ---------------- */
+/* ---------- 공용 ---------- */
+function ElementChip({ el, label }: { el: Element; label?: string }) {
+  const info = ELEMENT_INFO[el];
+  return (
+    <span className={`el-chip ${el}`}>
+      {info.symbol} {label ?? info.name}
+    </span>
+  );
+}
+
+function RunHud() {
+  const hp = useGame((s) => s.hp);
+  const maxHp = useGame((s) => s.maxHp);
+  const level = useGame((s) => s.level);
+  const xp = useGame((s) => s.xp);
+  const deckN = useGame((s) => s.masterDeck.length);
+  const weapon = useGame((s) => s.weapon);
+  return (
+    <div className="hud">
+      <div className="hud-row">
+        <span className="wpn">
+          {weapon?.emoji} {weapon?.name}
+        </span>
+        <span className="lv">Lv {level}</span>
+        <span className="turn">🃏 덱 {deckN}장</span>
+      </div>
+      <div className="hud-row">
+        <span className="hplabel">❤️ {hp}/{maxHp}</span>
+        <div className="bar hp big">
+          <span style={{ width: `${(hp / maxHp) * 100}%` }} />
+        </div>
+        <div className="bar xp">
+          <span style={{ width: `${(xp / xpForLevel(level)) * 100}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const shakeKeyframes: Keyframe[] = [
+  { transform: "translateX(0)" },
+  { transform: "translateX(-6px) rotate(-1deg)" },
+  { transform: "translateX(6px) rotate(1deg)" },
+  { transform: "translateX(-4px)" },
+  { transform: "translateX(4px)" },
+  { transform: "translateX(0)" },
+];
+
+/* ---------- Intro ---------- */
 function Intro() {
   const chooseWeapon = useGame((s) => s.chooseWeapon);
   return (
@@ -28,17 +81,13 @@ function Intro() {
         <small>포커 × 주사위 × SF 카우보이</small>
       </div>
       <p className="hint">
-        무기를 골라 시작. <b>주사위</b>로 장전하고 <b>포커 족보</b>로 데미지를,{" "}
-        <b>카드 무늬</b>로 속성을 정합니다. 낮은 눈=선공, 높은 눈=데미지↑, 재장전
-        같은 눈=크리티컬.
+        무기를 골라 탑을 오르세요. <b>주사위</b>로 장전, <b>포커 족보</b>로 데미지,{" "}
+        <b>카드 무늬</b>로 속성. 전투 승리 시 <b>카드 획득</b>, 휴식에서{" "}
+        <b>카드 제거</b>로 덱을 특화합니다.
       </p>
       <div className="weapon-grid">
         {WEAPONS.map((w) => (
-          <button
-            key={w.key}
-            className="panel weapon-card"
-            onClick={() => chooseWeapon(w)}
-          >
+          <button key={w.key} className="panel weapon-card" onClick={() => chooseWeapon(w)}>
             <div className="emoji">{w.emoji}</div>
             <h3>{w.name}</h3>
             <p>{w.blurb}</p>
@@ -53,26 +102,137 @@ function Intro() {
   );
 }
 
-/* ---------------- Helpers ---------------- */
-function ElementChip({ el, label }: { el: Element; label?: string }) {
-  const info = ELEMENT_INFO[el];
+/* ---------- Map ---------- */
+function MapScreen() {
+  const map = useGame((s) => s.map);
+  const available = useGame((s) => s.available);
+  const enterNode = useGame((s) => s.enterNode);
+  if (!map) return null;
+  const rowsTopDown = map.rows.slice().reverse();
   return (
-    <span className={`el-chip ${el}`}>
-      {info.symbol} {label ?? info.name}
-    </span>
+    <div className="screen">
+      <RunHud />
+      <h2 className="screen-title">🗺️ 어디로 갈까</h2>
+      <div className="map">
+        {rowsTopDown.map((rowIds, ri) => (
+          <div className="map-row" key={ri}>
+            {rowIds.map((id) => {
+              const node: MapNode = map.nodes[id];
+              const info = NODE_INFO[node.type];
+              const canGo = available.includes(id);
+              return (
+                <button
+                  key={id}
+                  className={`mapnode ${node.type} ${canGo ? "go" : ""}`}
+                  disabled={!canGo}
+                  onClick={() => enterNode(id)}
+                >
+                  <span className="ni-emoji">{info.emoji}</span>
+                  <span className="ni-name">{info.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+      <p className="hint">밝게 표시된 노드로 진입할 수 있습니다. 꼭대기 👑보스를 처치하면 클리어.</p>
+    </div>
   );
 }
 
-const shakeKeyframes: Keyframe[] = [
-  { transform: "translateX(0)" },
-  { transform: "translateX(-6px) rotate(-1deg)" },
-  { transform: "translateX(6px) rotate(1deg)" },
-  { transform: "translateX(-4px)" },
-  { transform: "translateX(4px)" },
-  { transform: "translateX(0)" },
-];
+/* ---------- Reward (카드 추가) ---------- */
+function RewardCard({ card }: { card: Card }) {
+  const pick = useGame((s) => s.pickReward);
+  const el = SUIT_ELEMENT[card.suit];
+  return (
+    <button className={`pcard big ${el}`} onClick={() => pick(card.id)}>
+      <div className="rank">{rankLabel(card.rank)}</div>
+      <div className="cel">{ELEMENT_INFO[el].symbol}</div>
+      <div className={`suit ${card.suit}`}>{SUIT_SYMBOL[card.suit]}</div>
+    </button>
+  );
+}
+function Reward() {
+  const cards = useGame((s) => s.rewardCards);
+  const skip = useGame((s) => s.skipReward);
+  return (
+    <div className="screen">
+      <RunHud />
+      <h2 className="screen-title">🃏 카드 획득</h2>
+      <p className="hint">덱에 넣을 카드를 하나 고르세요. 무늬(속성)와 숫자를 보고 빌드에 맞게.</p>
+      <div className="reward-row">
+        {cards.map((c) => (
+          <div key={c.id} className="reward-slot">
+            <RewardCard card={c} />
+            <div className="reward-el">
+              <ElementChip el={SUIT_ELEMENT[c.suit]} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <button className="btn ghost wide" onClick={skip}>
+        건너뛰기
+      </button>
+    </div>
+  );
+}
 
-/* ---------------- Enemy ---------------- */
+/* ---------- Rest (회복 / 카드 제거) ---------- */
+function Rest() {
+  const heal = useGame((s) => s.restHeal);
+  const remove = useGame((s) => s.removeCard);
+  const deck = useGame((s) => s.masterDeck);
+  const maxHp = useGame((s) => s.maxHp);
+  const [removing, setRemoving] = useState(false);
+
+  const sorted = deck
+    .slice()
+    .sort((a, b) => a.suit.localeCompare(b.suit) || a.rank - b.rank);
+
+  return (
+    <div className="screen">
+      <RunHud />
+      <h2 className="screen-title">🔥 휴식</h2>
+      {!removing ? (
+        <>
+          <p className="hint">회복하거나, 카드를 제거해 덱을 특화하세요.</p>
+          <div className="rest-actions">
+            <button className="btn fire wide" onClick={heal}>
+              ❤️ 회복 (+{Math.round(maxHp * 0.3)})
+            </button>
+            <button className="btn ghost wide" onClick={() => setRemoving(true)}>
+              🗑️ 카드 제거
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="hint">덱에서 뺄 카드를 고르세요 (특화). 덱 {deck.length}장.</p>
+          <div className="deck-grid">
+            {sorted.map((c) => {
+              const el = SUIT_ELEMENT[c.suit];
+              return (
+                <button
+                  key={c.id}
+                  className={`minicard ${el}`}
+                  onClick={() => remove(c.id)}
+                >
+                  {rankLabel(c.rank)}
+                  <span className={`suit ${c.suit}`}>{SUIT_SYMBOL[c.suit]}</span>
+                </button>
+              );
+            })}
+          </div>
+          <button className="btn ghost wide" onClick={() => setRemoving(false)}>
+            뒤로
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Combat ---------- */
 function reactionTags(enemy: EnemyInstance) {
   const tags: { el: Element; kind: "weak" | "resist" | "immune" }[] = [];
   (Object.keys(enemy.reactions) as Element[]).forEach((el) => {
@@ -99,10 +259,7 @@ function EnemyCard({ enemy }: { enemy: EnemyInstance }) {
     setFloaters((p) => [...p, ...mine]);
     ref.current?.animate(shakeKeyframes, { duration: 380, easing: "ease-in-out" });
     const ids = new Set(mine.map((m) => m.id));
-    const t = setTimeout(
-      () => setFloaters((p) => p.filter((f) => !ids.has(f.id))),
-      1000
-    );
+    const t = setTimeout(() => setFloaters((p) => p.filter((f) => !ids.has(f.id))), 1000);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fxSeq]);
@@ -150,7 +307,6 @@ function EnemyCard({ enemy }: { enemy: EnemyInstance }) {
   );
 }
 
-/* ---------------- Card ---------------- */
 function PlayCard({ card, index }: { card: Card; index: number }) {
   const selected = useGame((s) => s.selected);
   const toggle = useGame((s) => s.toggleSelect);
@@ -169,7 +325,6 @@ function PlayCard({ card, index }: { card: Card; index: number }) {
   );
 }
 
-/* ---------------- Dice ---------------- */
 function Dice() {
   const roll = useGame((s) => s.currentRoll);
   const crit = useGame((s) => s.crit);
@@ -193,19 +348,16 @@ function Dice() {
   );
 }
 
-/* ---------------- Combat ---------------- */
 function Combat() {
   const s = useGame();
   const preview = useGame((st) => st.preview)();
   const weapon = s.weapon!;
-  const canAct = s.phase === "player";
+  const canAct = s.combatTurn === "player";
   const [logOpen, setLogOpen] = useState(false);
 
-  // 플레이어 피격 흔들림
   const hudRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (s.playerHitSeq > 0)
-      hudRef.current?.animate(shakeKeyframes, { duration: 400 });
+    if (s.playerHitSeq > 0) hudRef.current?.animate(shakeKeyframes, { duration: 400 });
   }, [s.playerHitSeq]);
 
   const load = Math.min(s.currentRoll ?? 0, weapon.magazineCap);
@@ -213,27 +365,19 @@ function Combat() {
 
   return (
     <div className="combat">
-      {/* 화면 플래시 */}
       {s.flash && <div key={s.fxSeq} className={`flash ${s.flash}`} />}
 
-      {/* HUD */}
       <div className="hud" ref={hudRef}>
         <div className="hud-row">
-          <span className="wpn">
-            {weapon.emoji} {weapon.name}
-          </span>
+          <span className="wpn">{weapon.emoji} {weapon.name}</span>
           <span className="lv">Lv {s.level}</span>
-          <span className="turn">
-            T{s.turn} · 사격 {s.shotsLeft} · 재장전 {s.reloadsLeft}
-          </span>
-          <button className="logbtn" onClick={() => setLogOpen(true)}>
-            ▤
-          </button>
+          <span className="turn">T{s.turn} · 사격 {s.shotsLeft} · 재장전 {s.reloadsLeft}</span>
+          <button className="logbtn" onClick={() => setLogOpen(true)}>▤</button>
         </div>
         <div className="hud-row">
-          <span className="hplabel">❤️ {s.playerHp}</span>
+          <span className="hplabel">❤️ {s.hp}</span>
           <div className="bar hp big">
-            <span style={{ width: `${(s.playerHp / s.playerMaxHp) * 100}%` }} />
+            <span style={{ width: `${(s.hp / s.maxHp) * 100}%` }} />
           </div>
           <div className="bar xp">
             <span style={{ width: `${(s.xp / xpForLevel(s.level)) * 100}%` }} />
@@ -241,24 +385,18 @@ function Combat() {
         </div>
       </div>
 
-      {/* 적 */}
       <div className="enemies">
         {s.enemies.map((e) => (
           <EnemyCard key={e.id} enemy={e} />
         ))}
       </div>
 
-      {/* 중앙 스테이지: 주사위 + 예상 피해 */}
       <div className="stage">
         <div className="stage-left">
           <Dice />
           <div className="rollmeta">
-            <div>
-              장전 <b>{load}</b>발
-            </div>
-            <div>
-              데미지 <b>×{dmgBonus}</b>
-            </div>
+            <div>장전 <b>{load}</b>발</div>
+            <div>데미지 <b>×{dmgBonus}</b></div>
             {s.crit && <div className="critword">크리티컬!</div>}
           </div>
         </div>
@@ -283,35 +421,23 @@ function Combat() {
           ) : (
             <div className="phint">
               카드를 눌러 족보를 만드세요
-              <div className="phint2">
-                같은 숫자=페어 · 같은 무늬 5장=플러시 · 연속 5장=스트레이트
-              </div>
+              <div className="phint2">같은 숫자=페어 · 같은 무늬 5장=플러시 · 연속 5장=스트레이트</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* 손패 */}
-      <div className="hand" key={s.fxSeq /* 매 사격마다 새로 딜 애니메이션 */}>
+      <div className="hand" key={s.fxSeq}>
         {s.hand.map((c, i) => (
           <PlayCard key={c.id} card={c} index={i} />
         ))}
       </div>
 
-      {/* 액션바 (하단 고정) */}
       <div className="actionbar">
-        <button
-          className="btn ghost"
-          disabled={!canAct || s.reloadsLeft <= 0}
-          onClick={s.reload}
-        >
+        <button className="btn ghost" disabled={!canAct || s.reloadsLeft <= 0} onClick={s.reload}>
           🎲 재장전<small>{s.reloadsLeft}</small>
         </button>
-        <button
-          className="btn fire big"
-          disabled={!canAct || s.selected.length === 0}
-          onClick={s.shoot}
-        >
+        <button className="btn fire big" disabled={!canAct || s.selected.length === 0} onClick={s.shoot}>
           🔫 발사{s.selected.length > 0 ? ` ${s.selected.length}` : ""}
         </button>
       </div>
@@ -319,7 +445,6 @@ function Combat() {
         {weapon.fireMode === "all" ? "샷건: 모든 적 동시 타격" : "적을 눌러 조준"}
       </div>
 
-      {/* 로그 드로어 */}
       {logOpen && (
         <div className="drawer-bg" onClick={() => setLogOpen(false)}>
           <div className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -327,14 +452,9 @@ function Combat() {
               전투 기록 <button onClick={() => setLogOpen(false)}>✕</button>
             </div>
             <div className="log">
-              {s.log
-                .slice()
-                .reverse()
-                .map((line, i) => (
-                  <div key={s.log.length - i} className="line">
-                    {line}
-                  </div>
-                ))}
+              {s.log.slice().reverse().map((line, i) => (
+                <div key={s.log.length - i} className="line">{line}</div>
+              ))}
             </div>
           </div>
         </div>
@@ -343,20 +463,19 @@ function Combat() {
   );
 }
 
-/* ---------------- Result ---------------- */
+/* ---------- Result ---------- */
 function Result() {
-  const phase = useGame((s) => s.phase);
+  const screen = useGame((s) => s.screen);
   const restart = useGame((s) => s.restart);
   const level = useGame((s) => s.level);
-  const turn = useGame((s) => s.turn);
-  const win = phase === "won";
+  const win = screen === "won";
   return (
     <div className={`result ${win ? "win" : "lose"}`}>
-      <h2>{win ? "VICTORY" : "YOU DIED"}</h2>
+      <h2>{win ? "TOWER CLEARED" : "YOU DIED"}</h2>
       <p>
         {win
-          ? `무법자 무리를 정리했다. Lv.${level} · ${turn}턴`
-          : `황무지에 쓰러졌다. ${turn}턴까지 버텼다.`}
+          ? `탑 꼭대기의 드렛전 킹을 쓰러뜨렸다. 최종 Lv.${level}`
+          : `황무지에 쓰러졌다. 최종 Lv.${level}`}
       </p>
       <button className="btn fire big" onClick={restart}>
         다시 도전

@@ -670,6 +670,172 @@ button {
   margin: 16px 0 28px;
 }
 
+/* ---------- 맵 / 보상 / 휴식 화면 ---------- */
+.screen {
+  padding: 12px 14px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.screen-title {
+  text-align: center;
+  color: var(--sand);
+  font-size: 22px;
+  margin: 6px 0 0;
+}
+.wide {
+  width: 100%;
+}
+
+/* 맵 */
+.map {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 10px 0;
+}
+.map-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+}
+.mapnode {
+  flex: 0 0 auto;
+  width: 92px;
+  height: 76px;
+  min-height: 76px;
+  max-height: 76px;
+  border-radius: 14px;
+  border: 1px solid var(--panel-line);
+  background: #14161d;
+  color: var(--ink-dim);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  opacity: 0.5;
+  transition: transform 0.12s, box-shadow 0.12s, opacity 0.12s;
+}
+.mapnode .ni-emoji {
+  font-size: 26px;
+}
+.mapnode .ni-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+.mapnode.go {
+  opacity: 1;
+  color: var(--ink);
+  border-color: var(--neon);
+  box-shadow: 0 0 18px rgba(63, 224, 208, 0.22);
+  animation: pulseGo 1.4s ease-in-out infinite;
+}
+.mapnode.go:active {
+  transform: scale(0.95);
+}
+.mapnode.boss.go {
+  border-color: var(--gold);
+  box-shadow: 0 0 22px rgba(255, 207, 107, 0.35);
+}
+.mapnode.boss {
+  color: var(--gold);
+}
+.mapnode.elite {
+  color: #ff9a9a;
+}
+.mapnode.rest {
+  color: var(--fire);
+}
+@keyframes pulseGo {
+  0%,
+  100% {
+    box-shadow: 0 0 12px rgba(63, 224, 208, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(63, 224, 208, 0.4);
+  }
+}
+
+/* 보상 */
+.reward-row {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 20px 0;
+}
+.reward-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.pcard.big {
+  width: 84px;
+  height: 122px;
+  animation: none;
+}
+.pcard.big .rank {
+  font-size: 26px;
+}
+.pcard.big .suit {
+  font-size: 28px;
+}
+
+/* 휴식 */
+.rest-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+}
+.deck-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  padding: 10px 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.minicard {
+  width: 44px;
+  height: 60px;
+  border-radius: 8px;
+  background: linear-gradient(160deg, #f4efe2, #d9d2c0);
+  border: 2px solid #b7ad95;
+  color: #1a1a1a;
+  font-weight: 800;
+  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.minicard .suit {
+  font-size: 16px;
+}
+.minicard.fire {
+  box-shadow: inset 0 -12px 14px -12px var(--fire);
+}
+.minicard.ice {
+  box-shadow: inset 0 -12px 14px -12px var(--ice);
+}
+.minicard.lightning {
+  box-shadow: inset 0 -12px 14px -12px var(--lightning);
+}
+.minicard.poison {
+  box-shadow: inset 0 -12px 14px -12px var(--poison);
+}
+.minicard:active {
+  transform: scale(0.94);
+  box-shadow: 0 0 0 2px var(--danger);
+}
+
 /* 넓은 화면 */
 @media (min-width: 620px) {
   .weapon-grid {

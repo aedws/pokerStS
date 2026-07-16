@@ -16,6 +16,8 @@ import { WEAPONS } from "../engine/weapons";
 import { xpForLevel, xpReward } from "../engine/progression";
 import { generateMap } from "../engine/map";
 import type { GameMap, NodeType } from "../engine/map";
+import { applyRelics, relicCtx, randomRelics } from "../engine/relics";
+import type { Relic } from "../engine/relics";
 
 // 화면(런 전체 흐름)
 export type Screen =
@@ -23,15 +25,24 @@ export type Screen =
   | "map"
   | "combat"
   | "reward"
+  | "cull"
+  | "relicReward"
   | "rest"
   | "won"
   | "lost";
 export type CombatTurn = "player" | "enemy";
 
+export interface AttackView extends AttackBreakdown {
+  relicMult: number;
+  relicNotes: { emoji: string; mult: number }[];
+}
+
 const START_HP = 80;
 const REST_HEAL = 0.3;
 const LEVELUP_HP = 6;
 const RELOADS_PER_SHOT = 2;
+const DECK_CAP = 52; // 이 이상이면 강제로 한 장 교체(cull)
+const INITIATIVE_MAX = 3; // 주사위 눈이 이 값 이하이면 선공(반격 무효)
 
 const STATUS_ON_HIT: Record<Element, Partial<EnemyInstance["statuses"]>> = {
   fire: { burn: 3 },
@@ -61,13 +72,16 @@ interface GameState {
   level: number;
   xp: number;
 
+  relics: string[]; // 보유 유물 key
+
   map: GameMap | null;
   available: string[]; // 지금 진입 가능한 노드 id
   currentRow: number;
   currentNodeId: string | null;
   currentNodeType: NodeType | null;
 
-  rewardCards: Card[]; // 전투 보상 후보
+  rewardCards: Card[]; // 전투 보상 후보 (카드)
+  relicChoices: Relic[]; // 엘리트 보상 후보 (유물)
 
   // ---- 전투(combat) 일시 상태 ----
   drawPile: Card[];
@@ -103,11 +117,13 @@ interface GameState {
   shoot: () => void;
   pickReward: (cardId: string) => void;
   skipReward: () => void;
+  cullCard: (cardId: string) => void;
+  pickRelic: (key: string) => void;
   restHeal: () => void;
   removeCard: (cardId: string) => void;
   restart: () => void;
 
-  preview: () => AttackBreakdown | null;
+  preview: () => AttackView | null;
 }
 
 function drawCards(
@@ -139,6 +155,29 @@ function retarget(enemies: EnemyInstance[], current: string | null): string | nu
   return liveEnemies(enemies)[0]?.id ?? null;
 }
 
+// 포커 데미지 + 유물 시너지까지 합친 최종 공격 계산 (preview / shoot 공용)
+function finalAttack(
+  s: { weapon: Weapon | null; currentRoll: number | null; crit: boolean; relics: string[] },
+  selectedCards: Card[],
+  reactions: EnemyInstance["reactions"]
+): AttackView {
+  const atk = computeAttack(selectedCards, reactions, {
+    damageBonus: damageBonusFor(s.currentRoll ?? 1),
+    crit: s.crit,
+    singleSuitMult: s.weapon!.singleSuitMult,
+  });
+  const { mult, notes } = applyRelics(
+    s.relics,
+    relicCtx(atk, selectedCards.length, s.crit)
+  );
+  const total = Math.round(atk.total * mult);
+  const perElement = atk.perElement.map((p) => ({
+    element: p.element,
+    amount: Math.round(p.amount * mult),
+  }));
+  return { ...atk, total, perElement, relicMult: mult, relicNotes: notes };
+}
+
 export const useGame = create<GameState>((set, get) => ({
   screen: "intro",
   combatTurn: "player",
@@ -148,12 +187,14 @@ export const useGame = create<GameState>((set, get) => ({
   maxHp: START_HP,
   level: 1,
   xp: 0,
+  relics: [],
   map: null,
   available: [],
   currentRow: 0,
   currentNodeId: null,
   currentNodeType: null,
   rewardCards: [],
+  relicChoices: [],
   drawPile: [],
   discard: [],
   hand: [],
@@ -184,6 +225,7 @@ export const useGame = create<GameState>((set, get) => ({
       maxHp: START_HP,
       level: 1,
       xp: 0,
+      relics: [],
       map,
       available: map.rows[0],
       currentRow: 0,
@@ -255,7 +297,6 @@ export const useGame = create<GameState>((set, get) => ({
     const selectedCards = s.hand.filter((c) => s.selected.includes(c.id));
     if (selectedCards.length === 0) return;
 
-    const damageBonus = damageBonusFor(s.currentRoll ?? 1);
     let targets: EnemyInstance[];
     if (s.weapon!.fireMode === "all") {
       targets = liveEnemies(s.enemies);
@@ -276,14 +317,10 @@ export const useGame = create<GameState>((set, get) => ({
       const idx = enemies.findIndex((e) => e.id === t.id);
       if (idx < 0 || enemies[idx].hp <= 0) continue;
       const enemy = enemies[idx];
-      const atk = computeAttack(selectedCards, enemy.reactions, {
-        damageBonus,
-        crit: s.crit,
-        singleSuitMult: s.weapon!.singleSuitMult,
-      });
+      const atk = finalAttack(s, selectedCards, enemy.reactions);
       if (atk.hand.type.key.includes("flush")) sawFlush = true;
 
-      let dmg = atk.total;
+      let dmg = atk.total; // 유물 배수까지 반영된 값
       if (enemy.statuses.shock > 0) {
         dmg = Math.round(dmg * (1 + 0.3 * enemy.statuses.shock));
         enemy.statuses.shock = 0;
@@ -330,17 +367,44 @@ export const useGame = create<GameState>((set, get) => ({
     const s = get();
     const card = s.rewardCards.find((c) => c.id === cardId);
     if (!card) return;
-    set({
-      masterDeck: [...s.masterDeck, card],
-      rewardCards: [],
-      log: [...s.log, `🃏 카드 획득: 덱에 추가 (덱 ${s.masterDeck.length + 1}장)`],
-    });
-    advanceMap(set, get);
+    const deck = [...s.masterDeck, card];
+    const log = [...s.log, `🃏 카드 획득: 덱에 추가 (덱 ${deck.length}장)`];
+    set({ masterDeck: deck, rewardCards: [], log });
+    // 52장을 넘으면 강제로 한 장 교체(cull)해서 덱을 특화 상태로 유지
+    if (deck.length > DECK_CAP) {
+      set({ screen: "cull", log: [...log, `덱이 ${DECK_CAP}장을 넘었다 — 뺄 카드를 고르세요.`] });
+    } else {
+      advanceMap(set, get);
+    }
   },
 
   skipReward: () => {
     const s = get();
     set({ rewardCards: [], log: [...s.log, `보상을 건너뛰었다.`] });
+    advanceMap(set, get);
+  },
+
+  cullCard: (cardId) => {
+    const s = get();
+    if (s.masterDeck.length <= 5) return;
+    const deck = s.masterDeck.filter((c) => c.id !== cardId);
+    set({
+      masterDeck: deck,
+      log: [...s.log, `🔁 카드 교체 · 덱 특화 (덱 ${deck.length}장)`],
+    });
+    if (deck.length > DECK_CAP) return; // 여전히 초과면 cull 유지
+    advanceMap(set, get);
+  },
+
+  pickRelic: (key) => {
+    const s = get();
+    if (s.relics.includes(key)) return;
+    const relic = s.relicChoices.find((r) => r.key === key);
+    set({
+      relics: [...s.relics, key],
+      relicChoices: [],
+      log: [...s.log, `🏺 유물 획득: ${relic?.name ?? key}`],
+    });
     advanceMap(set, get);
   },
 
@@ -367,6 +431,7 @@ export const useGame = create<GameState>((set, get) => ({
       screen: "intro",
       weapon: null,
       masterDeck: [],
+      relics: [],
       enemies: [],
       hand: [],
       selected: [],
@@ -384,11 +449,7 @@ export const useGame = create<GameState>((set, get) => ({
     const target =
       s.enemies.find((e) => e.id === s.targetId && e.hp > 0) ??
       liveEnemies(s.enemies)[0];
-    return computeAttack(selectedCards, target?.reactions ?? {}, {
-      damageBonus: damageBonusFor(s.currentRoll ?? 1),
-      crit: s.crit,
-      singleSuitMult: s.weapon.singleSuitMult,
-    });
+    return finalAttack(s, selectedCards, target?.reactions ?? {});
   },
 }));
 
@@ -479,21 +540,32 @@ function grantXpAndLevel(
   return { xp, level, maxHp, hp };
 }
 
-function winCombat(
-  set: SetFn,
-  get: GetFn,
-  base: Partial<GameState>
-) {
+function winCombat(set: SetFn, get: GetFn, base: Partial<GameState>) {
   const s = get();
+  const log = base.log ?? s.log;
   if (s.currentNodeType === "boss") {
     set({ ...base, screen: "won" });
     return;
   }
+  // 엘리트 승리 = 유물(시너지) 보상
+  if (s.currentNodeType === "elite") {
+    const choices = randomRelics(3, s.relics);
+    if (choices.length > 0) {
+      set({
+        ...base,
+        screen: "relicReward",
+        relicChoices: choices,
+        log: [...log, `🏆 엘리트 격파! 유물을 고르세요.`],
+      });
+      return;
+    }
+  }
+  // 일반 전투 승리 = 카드 보상
   set({
     ...base,
     screen: "reward",
     rewardCards: randomRewardCards(3),
-    log: [...(base.log ?? s.log), `🏆 승리! 보상 카드를 고르세요.`],
+    log: [...log, `🏆 승리! 보상 카드를 고르세요.`],
   });
 }
 
@@ -546,11 +618,16 @@ function enemyTurn(set: SetFn, get: GetFn) {
   const s = get();
   set({ combatTurn: "enemy" });
   const lastRoll = s.currentRoll ?? 6;
+  // 선공(이니셔티브): 마지막 사격의 눈이 낮으면 이번 턴 적 반격을 전부 무효화
+  const hasInitiative = lastRoll <= INITIATIVE_MAX;
   const log = [...s.log];
   let hp = s.hp;
   let playerDamage = 0;
 
   const enemies = s.enemies.map((e) => ({ ...e, statuses: { ...e.statuses } }));
+  if (hasInitiative) {
+    log.push(`⚡ 선공! (눈 ${lastRoll}) 이번 턴 적의 반격을 모두 무력화한다.`);
+  }
 
   for (const e of enemies) {
     if (e.hp <= 0) continue;
@@ -567,14 +644,12 @@ function enemyTurn(set: SetFn, get: GetFn) {
       if (e.hp <= 0) continue;
     }
 
+    // 선공이면 반격 무효 (상태이상은 위에서 이미 적용됨)
+    if (hasInitiative) continue;
+
     if (e.statuses.chill > 0) {
       e.statuses.chill -= 1;
       log.push(`❄️ ${e.name} 빙결로 행동 불가.`);
-      continue;
-    }
-
-    if (lastRoll <= e.speed) {
-      log.push(`⚡ 선공! ${e.name}의 공격을 앞질러 무력화.`);
       continue;
     }
 

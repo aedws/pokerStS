@@ -4,6 +4,7 @@ import { evaluateHand } from "./poker";
 import { elementSplit, isSingleSuit, elementMultiplier } from "./element";
 import { computeAttack } from "./damage";
 import { damageBonusFor, rollDie } from "./dice";
+import { applyRelics, relicCtx } from "./relics";
 
 function c(rank: number, suit: Card["suit"]): Card {
   return { id: `${suit}-${rank}`, rank, suit };
@@ -134,5 +135,51 @@ describe("damage computation", () => {
     const base = computeAttack(cards, {}, { damageBonus: 1, crit: false });
     const crit = computeAttack(cards, {}, { damageBonus: 1, crit: true });
     expect(crit.total).toBeGreaterThan(base.total);
+  });
+});
+
+describe("relic synergy", () => {
+  it("flush master rewards a flush build", () => {
+    const flush = computeAttack(
+      [
+        c(2, "hearts"),
+        c(5, "hearts"),
+        c(9, "hearts"),
+        c(11, "hearts"),
+        c(13, "hearts"),
+      ],
+      { fire: 1 },
+      { damageBonus: 1, crit: false, singleSuitMult: 1.5 }
+    );
+    const withRelic = applyRelics(["flushMaster"], relicCtx(flush, 5, false));
+    expect(withRelic.mult).toBeCloseTo(1.6);
+
+    const pair = computeAttack(
+      [c(7, "hearts"), c(7, "spades")],
+      {},
+      { damageBonus: 1, crit: false }
+    );
+    const noProc = applyRelics(["flushMaster"], relicCtx(pair, 2, false));
+    expect(noProc.mult).toBe(1); // 페어엔 발동 안 함
+  });
+
+  it("relics multiply together", () => {
+    const flush = computeAttack(
+      [
+        c(2, "hearts"),
+        c(5, "hearts"),
+        c(9, "hearts"),
+        c(11, "hearts"),
+        c(13, "hearts"),
+      ],
+      { fire: 1 },
+      { damageBonus: 1, crit: false, singleSuitMult: 1.5 }
+    );
+    // flushMaster(1.6) × heartsAblaze(1.4) × fullChamber(1.5) × deadeye(1.3)
+    const r = applyRelics(
+      ["flushMaster", "heartsAblaze", "fullChamber", "deadeye"],
+      relicCtx(flush, 5, false)
+    );
+    expect(r.mult).toBeCloseTo(1.6 * 1.4 * 1.5 * 1.3, 4);
   });
 });

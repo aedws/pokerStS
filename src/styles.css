@@ -836,6 +836,76 @@ button {
   box-shadow: 0 0 0 2px var(--danger);
 }
 
+/* 유물 */
+.relicbar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.relic-chip {
+  font-size: 18px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(216, 182, 118, 0.12);
+  border: 1px solid var(--sand-dim, #8a744a);
+}
+.relic-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 0;
+}
+.relic-card {
+  text-align: left;
+  color: var(--ink);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+.relic-card:active {
+  transform: scale(0.98);
+}
+.relic-card:hover {
+  border-color: var(--gold);
+  box-shadow: 0 6px 22px rgba(255, 207, 107, 0.18);
+}
+.relic-emoji {
+  font-size: 34px;
+  flex-shrink: 0;
+}
+.relic-name {
+  color: var(--gold);
+  font-weight: 800;
+  font-size: 16px;
+}
+.relic-desc {
+  color: var(--ink-dim);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.relic-card > div:nth-child(2) {
+  flex: 1;
+}
+.el-chip.relic {
+  background: rgba(255, 207, 107, 0.16);
+  color: var(--gold);
+}
+
+/* 선공 표시 */
+.initword {
+  color: var(--neon);
+  font-weight: 800;
+}
+.noinit {
+  color: var(--ink-dim);
+}
+
 /* 넓은 화면 */
 @media (min-width: 620px) {
   .weapon-grid {

@@ -8,6 +8,7 @@ import type { EnemyInstance } from "../engine/enemies";
 import { xpForLevel } from "../engine/progression";
 import { NODE_INFO } from "../engine/map";
 import type { MapNode } from "../engine/map";
+import { relicByKey } from "../engine/relics";
 
 export function App() {
   const screen = useGame((s) => s.screen);
@@ -17,6 +18,8 @@ export function App() {
       {screen === "map" && <MapScreen />}
       {screen === "combat" && <Combat />}
       {screen === "reward" && <Reward />}
+      {screen === "cull" && <Cull />}
+      {screen === "relicReward" && <RelicReward />}
       {screen === "rest" && <Rest />}
       {(screen === "won" || screen === "lost") && <Result />}
     </div>
@@ -30,6 +33,24 @@ function ElementChip({ el, label }: { el: Element; label?: string }) {
     <span className={`el-chip ${el}`}>
       {info.symbol} {label ?? info.name}
     </span>
+  );
+}
+
+function RelicBar() {
+  const relics = useGame((s) => s.relics);
+  if (relics.length === 0) return null;
+  return (
+    <div className="relicbar">
+      {relics.map((k) => {
+        const r = relicByKey(k);
+        if (!r) return null;
+        return (
+          <span key={k} className="relic-chip" title={`${r.name}: ${r.desc}`}>
+            {r.emoji}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
@@ -58,6 +79,7 @@ function RunHud() {
           <span style={{ width: `${(xp / xpForLevel(level)) * 100}%` }} />
         </div>
       </div>
+      <RelicBar />
     </div>
   );
 }
@@ -177,6 +199,65 @@ function Reward() {
   );
 }
 
+/* ---------- Cull (52장 초과 → 교체) ---------- */
+function DeckGrid({ onPick }: { onPick: (id: string) => void }) {
+  const deck = useGame((s) => s.masterDeck);
+  const sorted = deck
+    .slice()
+    .sort((a, b) => a.suit.localeCompare(b.suit) || a.rank - b.rank);
+  return (
+    <div className="deck-grid">
+      {sorted.map((c) => {
+        const el = SUIT_ELEMENT[c.suit];
+        return (
+          <button key={c.id} className={`minicard ${el}`} onClick={() => onPick(c.id)}>
+            {rankLabel(c.rank)}
+            <span className={`suit ${c.suit}`}>{SUIT_SYMBOL[c.suit]}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+function Cull() {
+  const cull = useGame((s) => s.cullCard);
+  const deckN = useGame((s) => s.masterDeck.length);
+  return (
+    <div className="screen">
+      <RunHud />
+      <h2 className="screen-title">🔁 카드 교체</h2>
+      <p className="hint">
+        덱이 52장을 넘었습니다 ({deckN}장). 뺄 카드를 골라 덱을 특화하세요. (넣은 만큼 빼서 52장 유지)
+      </p>
+      <DeckGrid onPick={cull} />
+    </div>
+  );
+}
+
+/* ---------- Relic Reward (엘리트 보상) ---------- */
+function RelicReward() {
+  const choices = useGame((s) => s.relicChoices);
+  const pick = useGame((s) => s.pickRelic);
+  return (
+    <div className="screen">
+      <RunHud />
+      <h2 className="screen-title">🏺 유물 획득</h2>
+      <p className="hint">
+        빌드를 강화할 유물을 하나 고르세요. 덱을 특정 무늬·족보로 특화할수록 폭발합니다.
+      </p>
+      <div className="relic-choices">
+        {choices.map((r) => (
+          <button key={r.key} className="panel relic-card" onClick={() => pick(r.key)}>
+            <div className="relic-emoji">{r.emoji}</div>
+            <div className="relic-name">{r.name}</div>
+            <div className="relic-desc">{r.desc}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Rest (회복 / 카드 제거) ---------- */
 function Rest() {
   const heal = useGame((s) => s.restHeal);
@@ -287,7 +368,7 @@ function EnemyCard({ enemy }: { enemy: EnemyInstance }) {
         <span style={{ width: `${(enemy.hp / enemy.maxHp) * 100}%` }} />
       </div>
       <div className="estat">
-        HP {enemy.hp}/{enemy.maxHp} · ⚔️{enemy.attack} · 🏃{enemy.speed}
+        HP {enemy.hp}/{enemy.maxHp} · ⚔️{enemy.attack}
       </div>
       <div className="react">
         {reactionTags(enemy).map((t) => (
@@ -362,6 +443,7 @@ function Combat() {
 
   const load = Math.min(s.currentRoll ?? 0, weapon.magazineCap);
   const dmgBonus = (1 + ((s.currentRoll ?? 1) - 1) * 0.1).toFixed(1);
+  const hasInit = (s.currentRoll ?? 6) <= 3;
 
   return (
     <div className="combat">
@@ -395,8 +477,10 @@ function Combat() {
         <div className="stage-left">
           <Dice />
           <div className="rollmeta">
-            <div>장전 <b>{load}</b>발</div>
-            <div>데미지 <b>×{dmgBonus}</b></div>
+            <div>장전 <b>{load}</b>발 · 데미지 <b>×{dmgBonus}</b></div>
+            <div className={hasInit ? "initword" : "noinit"}>
+              {hasInit ? "⚡ 선공 (반격 무효)" : "후공 (반격 받음)"}
+            </div>
             {s.crit && <div className="critword">크리티컬!</div>}
           </div>
         </div>
@@ -416,6 +500,11 @@ function Combat() {
                 {preview.singleSuitBonus > 1 && (
                   <span className="el-chip gold">단일 ×{preview.singleSuitBonus}</span>
                 )}
+                {preview.relicNotes.map((n, i) => (
+                  <span key={i} className="el-chip relic">
+                    {n.emoji}×{n.mult}
+                  </span>
+                ))}
               </div>
             </>
           ) : (

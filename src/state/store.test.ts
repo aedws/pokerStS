@@ -47,19 +47,22 @@ describe("run store — map + combat + reward loop", () => {
     expect(s.hand.length).toBeGreaterThan(0);
   });
 
-  it("winning a normal combat opens a card reward, and picking adds to the deck", () => {
+  it("winning a normal combat gives a card reward; picking forces a cull back to 52", () => {
     useGame.getState().chooseWeapon(WEAPONS[0]);
     useGame.getState().enterNode(useGame.getState().available[0]);
     const end = autoFightToEnd();
-    // 첫 노드는 일반 전투 → 승리 시 보상, 패배 시 lost
     expect(["reward", "lost"]).toContain(end);
     if (end === "reward") {
-      const before = useGame.getState().masterDeck.length;
       const card = useGame.getState().rewardCards[0];
       useGame.getState().pickReward(card.id);
-      const after = useGame.getState();
-      expect(after.masterDeck.length).toBe(before + 1);
-      expect(after.screen).toBe("map");
+      // 52 + 1 = 53 → cull 화면으로
+      expect(useGame.getState().screen).toBe("cull");
+      expect(useGame.getState().masterDeck.length).toBe(53);
+      // 한 장 빼면 다시 52, 맵으로
+      const cullId = useGame.getState().masterDeck[0].id;
+      useGame.getState().cullCard(cullId);
+      expect(useGame.getState().masterDeck.length).toBe(52);
+      expect(useGame.getState().screen).toBe("map");
     }
   });
 
